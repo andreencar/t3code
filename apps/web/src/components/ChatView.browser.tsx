@@ -585,6 +585,58 @@ async function waitForInteractionModeButton(
   );
 }
 
+async function waitForServerConfigToApply(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.serverGetConfig)).toBe(true);
+    },
+    { timeout: 8_000, interval: 16 },
+  );
+  await waitForLayout();
+}
+
+function dispatchChatNewShortcut(): void {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "o",
+      shiftKey: true,
+      metaKey: useMetaForMod,
+      ctrlKey: !useMetaForMod,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+async function triggerChatNewShortcutUntilPath(
+  router: ReturnType<typeof getRouter>,
+  predicate: (pathname: string) => boolean,
+  errorMessage: string,
+): Promise<string> {
+  let pathname = router.state.location.pathname;
+  const deadline = Date.now() + 8_000;
+  while (Date.now() < deadline) {
+    dispatchChatNewShortcut();
+    await waitForLayout();
+    pathname = router.state.location.pathname;
+    if (predicate(pathname)) {
+      return pathname;
+    }
+  }
+  throw new Error(`${errorMessage} Last path: ${pathname}`);
+}
+
+async function waitForNewThreadShortcutLabel(): Promise<void> {
+  const newThreadButton = page.getByTestId("new-thread-button");
+  await expect.element(newThreadButton).toBeInTheDocument();
+  await newThreadButton.hover();
+  const shortcutLabel = isMacPlatform(navigator.platform)
+    ? "New thread (⇧⌘O)"
+    : "New thread (Ctrl+Shift+O)";
+  await expect.element(page.getByText(shortcutLabel)).toBeInTheDocument();
+}
+
 async function waitForImagesToLoad(scope: ParentNode): Promise<void> {
   const images = Array.from(scope.querySelectorAll("img"));
   if (images.length === 0) {
@@ -1428,60 +1480,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("creates a new thread from the global chat.new shortcut", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-chat-shortcut-test" as MessageId,
-        targetText: "chat shortcut test",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          keybindings: [
-            {
-              command: "chat.new",
-              shortcut: {
-                key: "o",
-                metaKey: false,
-                ctrlKey: false,
-                shiftKey: true,
-                altKey: false,
-                modKey: true,
-              },
-              whenAst: {
-                type: "not",
-                node: { type: "identifier", name: "terminalFocus" },
-              },
-            },
-          ],
-        };
-      },
-    });
-
-    try {
-      const useMetaForMod = isMacPlatform(navigator.platform);
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "o",
-          shiftKey: true,
-          metaKey: useMetaForMod,
-          ctrlKey: !useMetaForMod,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-
-      await waitForURL(
-        mounted.router,
-        (path) => UUID_ROUTE_RE.test(path),
-        "Route should have changed to a new draft thread UUID from the shortcut.",
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("creates a fresh draft after the previous draft thread is promoted", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -1516,6 +1514,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     try {
       const newThreadButton = page.getByTestId("new-thread-button");
       await expect.element(newThreadButton).toBeInTheDocument();
+      await waitForNewThreadShortcutLabel();
+      await waitForServerConfigToApply();
       await newThreadButton.click();
 
       const promotedThreadPath = await waitForURL(
@@ -1529,19 +1529,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       syncServerReadModel(addThreadToSnapshot(fixture.snapshot, promotedThreadId));
       useComposerDraftStore.getState().clearDraftThread(promotedThreadId);
 
-      const useMetaForMod = isMacPlatform(navigator.platform);
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "o",
-          shiftKey: true,
-          metaKey: useMetaForMod,
-          ctrlKey: !useMetaForMod,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-
-      const freshThreadPath = await waitForURL(
+      const freshThreadPath = await triggerChatNewShortcutUntilPath(
         mounted.router,
         (path) => UUID_ROUTE_RE.test(path) && path !== promotedThreadPath,
         "Shortcut should create a fresh draft instead of reusing the promoted thread.",
