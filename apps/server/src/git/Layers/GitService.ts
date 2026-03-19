@@ -7,11 +7,9 @@
  * @module GitServiceLive
  */
 import { randomUUID } from "node:crypto";
-import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-import { Effect, Layer, Option, Schema, Scope, Stream } from "effect";
+import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { GitCommandError } from "../Errors.ts";
@@ -25,7 +23,8 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
-const TRACE2_POLL_INTERVAL_MS = 100;
+const Trace2ChunkSchema = Schema.Record(Schema.String, Schema.Unknown);
+const decodeTrace2Chunk = Schema.decodeEffect(Schema.fromJsonString(Trace2ChunkSchema));
 
 interface Trace2Monitor {
   readonly env: NodeJS.ProcessEnv;
@@ -61,27 +60,10 @@ function trace2ChildKey(record: Record<string, unknown>): string | null {
   return typeof hookName === "string" && hookName.trim().length > 0 ? hookName.trim() : null;
 }
 
-function parseTraceRecord(
-  line: string,
-): { ok: true; record: Record<string, unknown> } | { ok: false; message: string } {
-  try {
-    const parsed = JSON.parse(line);
-    if (!parsed || typeof parsed !== "object") {
-      return { ok: false, message: "Trace line was not an object." };
-    }
-    return { ok: true, record: parsed as Record<string, unknown> };
-  } catch (error) {
-    return {
-      ok: false,
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
 const createTrace2Monitor = Effect.fn(function* (
   input: Pick<ExecuteGitInput, "operation" | "cwd" | "args">,
   progress: ExecuteGitProgress | undefined,
-): Effect.fn.Return<Trace2Monitor, never, Scope.Scope> {
+) {
   if (!progress?.onHookStarted && !progress?.onHookFinished) {
     return {
       env: {},
@@ -89,11 +71,14 @@ const createTrace2Monitor = Effect.fn(function* (
     };
   }
 
-  const traceFilePath = join(tmpdir(), `t3code-git-trace2-${process.pid}-${randomUUID()}.json`);
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const traceDir = tmpdir();
+  const traceFileName = `t3code-git-trace2-${process.pid}-${randomUUID()}.json`;
+  const traceFilePath = path.join(traceDir, traceFileName);
   const hookStartByChildKey = new Map<string, { hookName: string; startedAtMs: number }>();
   let processedChars = 0;
   let lineBuffer = "";
-  let polling = false;
 
   const handleTraceLine = (line: string) =>
     Effect.gen(function* () {
@@ -102,16 +87,20 @@ const createTrace2Monitor = Effect.fn(function* (
         return;
       }
 
-      const parsedRecord = parseTraceRecord(trimmedLine);
-      if (!parsedRecord.ok) {
+      const decodedRecord = yield* Effect.exit(decodeTrace2Chunk(trimmedLine));
+      if (decodedRecord._tag === "Failure") {
         yield* Effect.logDebug(
-          `GitService.trace2: failed to parse trace line for ${quoteGitCommand(input.args)} in ${input.cwd}: ${
-            parsedRecord.message
-          }`,
+          `GitService.trace2: failed to parse trace line for ${quoteGitCommand(input.args)} in ${input.cwd}.`,
         );
         return;
       }
-      const record = parsedRecord.record;
+      const record = decodedRecord.value;
+      if (Object.keys(record).length === 0) {
+        yield* Effect.logDebug(
+          `GitService.trace2: failed to parse trace line for ${quoteGitCommand(input.args)} in ${input.cwd}: Trace line was not an object.`,
+        );
+        return;
+      }
 
       if (record.child_class !== "hook") {
         return;
@@ -150,40 +139,16 @@ const createTrace2Monitor = Effect.fn(function* (
       }
     });
 
-  const pollTraceFile = Effect.tryPromise({
-    try: async () => {
-      if (polling) {
-        return "";
-      }
-      polling = true;
-      try {
-        const contents = await readFile(traceFilePath, "utf8").catch((error: unknown) => {
-          const code =
-            typeof error === "object" && error !== null ? (error as { code?: unknown }).code : null;
-          if (code === "ENOENT") {
-            return "";
-          }
-          throw error;
-        });
-        if (contents.length <= processedChars) {
-          return "";
-        }
-        const delta = contents.slice(processedChars);
-        processedChars = contents.length;
-        return delta;
-      } finally {
-        polling = false;
-      }
-    },
-    catch: () => undefined,
-  }).pipe(
+  const readTraceDelta = fileSystem.readFileString(traceFilePath).pipe(
     Effect.catch(() => Effect.succeed("")),
     Effect.flatMap((delta) =>
       Effect.gen(function* () {
-        if (delta.length === 0) {
+        if (delta.length <= processedChars) {
           return;
         }
-        lineBuffer += delta;
+        const appended = delta.slice(processedChars);
+        processedChars = delta.length;
+        lineBuffer += appended;
         let newlineIndex = lineBuffer.indexOf("\n");
         while (newlineIndex >= 0) {
           const line = lineBuffer.slice(0, newlineIndex);
@@ -194,23 +159,28 @@ const createTrace2Monitor = Effect.fn(function* (
       }),
     ),
   );
+  const watchTraceFile = Stream.runForEach(fileSystem.watch(traceDir), (event) => {
+    const eventPath = event.path;
+    const isTargetTraceEvent =
+      eventPath === traceFileName ||
+      eventPath === traceFilePath ||
+      path.resolve(traceDir, eventPath) === traceFilePath;
+    if (!isTargetTraceEvent) {
+      return Effect.void;
+    }
+    return readTraceDelta;
+  }).pipe(Effect.ignoreCause({ log: true }));
 
-  const interval = setInterval(() => {
-    void Effect.runPromise(pollTraceFile);
-  }, TRACE2_POLL_INTERVAL_MS);
+  yield* Effect.forkScoped(watchTraceFile);
 
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
-      clearInterval(interval);
-      yield* pollTraceFile;
+      yield* readTraceDelta;
       const finalLine = lineBuffer.trim();
       if (finalLine.length > 0) {
         yield* handleTraceLine(finalLine);
       }
-      yield* Effect.tryPromise({
-        try: () => unlink(traceFilePath),
-        catch: () => undefined,
-      }).pipe(Effect.ignore);
+      yield* fileSystem.remove(traceFilePath).pipe(Effect.catch(() => Effect.void));
     }),
   );
 
@@ -218,7 +188,7 @@ const createTrace2Monitor = Effect.fn(function* (
     env: {
       GIT_TRACE2_EVENT: traceFilePath,
     },
-    flush: pollTraceFile,
+    flush: readTraceDelta,
   };
 });
 
@@ -281,6 +251,8 @@ const collectOutput = Effect.fn(function* <E>(
 
 const makeGitService = Effect.gen(function* () {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const execute: GitServiceShape["execute"] = Effect.fnUntraced(function* (input) {
     const commandInput = {
@@ -291,7 +263,10 @@ const makeGitService = Effect.gen(function* () {
     const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     const commandEffect = Effect.gen(function* () {
-      const trace2Monitor = yield* createTrace2Monitor(commandInput, input.progress);
+      const trace2Monitor = yield* createTrace2Monitor(commandInput, input.progress).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
       const child = yield* commandSpawner
         .spawn(
           ChildProcess.make("git", commandInput.args, {
