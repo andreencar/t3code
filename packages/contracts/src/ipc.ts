@@ -96,6 +96,9 @@ export interface DesktopUpdateActionResult {
 
 export interface DesktopBridge {
   getWsUrl: () => string | null;
+  getRemoteServerUrl?: () => Promise<string | null>;
+  testRemoteServerUrl?: (url: string) => Promise<{ ok: boolean; message: string }>;
+  saveRemoteServerUrl?: (url: string | null) => Promise<void>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;

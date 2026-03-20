@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type ProviderKind, DEFAULT_GIT_TEXT_GENERATION_MODEL } from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import {
@@ -69,6 +69,13 @@ function SettingsRouteView() {
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
+  const [remoteServerUrl, setRemoteServerUrl] = useState("");
+  const [isRemoteTesting, setIsRemoteTesting] = useState(false);
+  const [isRemoteSaving, setIsRemoteSaving] = useState(false);
+  const [remoteFeedback, setRemoteFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
 
   const codexBinaryPath = settings.codexBinaryPath;
   const codexHomePath = settings.codexHomePath;
@@ -85,6 +92,14 @@ function SettingsRouteView() {
       (option) =>
         option.slug === (settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL),
     )?.name ?? settings.textGenerationModel;
+
+  useEffect(() => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.getRemoteServerUrl) return;
+    void bridge.getRemoteServerUrl().then((url) => {
+      setRemoteServerUrl(url ?? "");
+    });
+  }, []);
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -173,6 +188,45 @@ function SettingsRouteView() {
     [settings, updateSettings],
   );
 
+  const testRemoteServer = useCallback(() => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.testRemoteServerUrl) return;
+    setRemoteFeedback(null);
+    setIsRemoteTesting(true);
+    void bridge
+      .testRemoteServerUrl(remoteServerUrl)
+      .then((result) => {
+        setRemoteFeedback({
+          kind: result.ok ? "success" : "error",
+          message: result.message,
+        });
+      })
+      .catch((error) => {
+        setRemoteFeedback({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Unable to test remote server.",
+        });
+      })
+      .finally(() => setIsRemoteTesting(false));
+  }, [remoteServerUrl]);
+
+  const saveRemoteServer = useCallback(() => {
+    const bridge = window.desktopBridge;
+    if (!bridge?.saveRemoteServerUrl) return;
+    setRemoteFeedback(null);
+    setIsRemoteSaving(true);
+    const nextValue = remoteServerUrl.trim();
+    void bridge
+      .saveRemoteServerUrl(nextValue.length > 0 ? nextValue : null)
+      .catch((error) => {
+        setRemoteFeedback({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Unable to save remote server URL.",
+        });
+      })
+      .finally(() => setIsRemoteSaving(false));
+  }, [remoteServerUrl]);
+
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
@@ -192,6 +246,58 @@ function SettingsRouteView() {
                 Configure app-level preferences for this device.
               </p>
             </header>
+
+            {isElectron &&
+              window.desktopBridge?.getRemoteServerUrl &&
+              window.desktopBridge?.testRemoteServerUrl &&
+              window.desktopBridge?.saveRemoteServerUrl && (
+                <section className="rounded-2xl border border-border bg-card p-5">
+                  <div className="mb-4">
+                    <h2 className="text-sm font-medium text-foreground">Remote Server</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Connect this desktop app to an existing T3 server URL.
+                    </p>
+                  </div>
+                  <div className="space-y-3">
+                    <Input
+                      value={remoteServerUrl}
+                      onChange={(event) => setRemoteServerUrl(event.target.value)}
+                      placeholder="http://100.80.180.96:3773"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={testRemoteServer}
+                        disabled={isRemoteTesting || isRemoteSaving}
+                      >
+                        {isRemoteTesting ? "Testing..." : "Test connection"}
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={saveRemoteServer}
+                        disabled={isRemoteSaving || isRemoteTesting}
+                      >
+                        {isRemoteSaving ? "Saving..." : "Save"}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Saving reloads the desktop app to apply the new connection target.
+                    </p>
+                    {remoteFeedback && (
+                      <p
+                        className={`text-xs ${
+                          remoteFeedback.kind === "success"
+                            ? "text-emerald-600"
+                            : "text-destructive"
+                        }`}
+                      >
+                        {remoteFeedback.message}
+                      </p>
+                    )}
+                  </div>
+                </section>
+              )}
 
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">

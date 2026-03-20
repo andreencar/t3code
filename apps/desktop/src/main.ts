@@ -56,8 +56,12 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const REMOTE_GET_URL_CHANNEL = "desktop:remote-get-url";
+const REMOTE_TEST_URL_CHANNEL = "desktop:remote-test-url";
+const REMOTE_SAVE_URL_CHANNEL = "desktop:remote-save-url";
 const STATE_DIR =
   process.env.T3CODE_STATE_DIR?.trim() || Path.join(OS.homedir(), ".t3", "userdata");
+const DESKTOP_CONFIG_PATH = Path.join(STATE_DIR, "desktop-config.json");
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -83,6 +87,7 @@ let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
 let backendAuthToken = "";
 let backendWsUrl = "";
+let runtimeInjectedDesktopWsUrl: string | null = null;
 let restartAttempt = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let isQuitting = false;
@@ -100,6 +105,94 @@ const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
 });
 const initialUpdateState = (): DesktopUpdateState =>
   createInitialDesktopUpdateState(app.getVersion(), desktopRuntimeInfo);
+
+interface DesktopPersistedConfig {
+  remoteServerUrl?: string | null;
+}
+
+function readPersistedDesktopConfig(): DesktopPersistedConfig {
+  try {
+    const raw = FS.readFileSync(DESKTOP_CONFIG_PATH, "utf8");
+    const parsed = JSON.parse(raw) as DesktopPersistedConfig;
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedDesktopConfig(config: DesktopPersistedConfig): void {
+  FS.mkdirSync(Path.dirname(DESKTOP_CONFIG_PATH), { recursive: true });
+  FS.writeFileSync(DESKTOP_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function normalizeRemoteWsUrl(rawUrl: string): string | null {
+  const candidate = rawUrl.trim();
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === "http:") {
+      parsed.protocol = "ws:";
+      return parsed.toString();
+    }
+    if (parsed.protocol === "https:") {
+      parsed.protocol = "wss:";
+      return parsed.toString();
+    }
+    if (parsed.protocol === "ws:" || parsed.protocol === "wss:") {
+      return parsed.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getConfiguredRemoteServerUrl(): string | null {
+  const envServerUrl = process.env.T3CODE_DESKTOP_SERVER_URL?.trim();
+  if (envServerUrl) return envServerUrl;
+
+  const envExplicitWsUrl = process.env.T3CODE_DESKTOP_WS_URL?.trim();
+  if (envExplicitWsUrl && envExplicitWsUrl !== runtimeInjectedDesktopWsUrl) {
+    return envExplicitWsUrl;
+  }
+
+  const persisted = readPersistedDesktopConfig().remoteServerUrl;
+  if (!persisted || !persisted.trim()) return null;
+  return persisted.trim();
+}
+
+function resolveConfiguredRemoteWsUrl(): string | null {
+  const configured = getConfiguredRemoteServerUrl();
+  if (!configured) return null;
+  const normalized = normalizeRemoteWsUrl(configured);
+  if (normalized) return normalized;
+  console.warn(`[desktop] ignoring invalid remote server URL: ${configured}`);
+  return null;
+}
+
+async function testRemoteServerUrl(rawUrl: string): Promise<{ ok: boolean; message: string }> {
+  const normalizedWsUrl = normalizeRemoteWsUrl(rawUrl);
+  if (!normalizedWsUrl) {
+    return { ok: false, message: "Enter a valid http(s) or ws(s) URL." };
+  }
+
+  try {
+    const wsUrl = new URL(normalizedWsUrl);
+    const probeUrl = new URL(wsUrl.toString());
+    probeUrl.protocol = probeUrl.protocol === "wss:" ? "https:" : "http:";
+    const timeout = AbortSignal.timeout(5_000);
+    const response = await fetch(probeUrl, { signal: timeout });
+    if (!response.ok) {
+      return { ok: false, message: `Server responded with HTTP ${response.status}.` };
+    }
+    return { ok: true, message: "Connection successful." };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Unable to reach server.",
+    };
+  }
+}
 
 function logTimestamp(): string {
   return new Date().toISOString();
@@ -1182,6 +1275,41 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(REMOTE_GET_URL_CHANNEL);
+  ipcMain.handle(REMOTE_GET_URL_CHANNEL, async () => {
+    const configured = getConfiguredRemoteServerUrl();
+    return configured && configured.length > 0 ? configured : null;
+  });
+
+  ipcMain.removeHandler(REMOTE_TEST_URL_CHANNEL);
+  ipcMain.handle(REMOTE_TEST_URL_CHANNEL, async (_event, rawUrl: unknown) => {
+    if (typeof rawUrl !== "string") {
+      return { ok: false, message: "Enter a valid URL." };
+    }
+    return testRemoteServerUrl(rawUrl);
+  });
+
+  ipcMain.removeHandler(REMOTE_SAVE_URL_CHANNEL);
+  ipcMain.handle(REMOTE_SAVE_URL_CHANNEL, async (_event, rawUrl: unknown) => {
+    const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    if (value.length === 0) {
+      writePersistedDesktopConfig({ remoteServerUrl: null });
+      delete process.env.T3CODE_DESKTOP_SERVER_URL;
+    } else {
+      const normalized = normalizeRemoteWsUrl(value);
+      if (!normalized) {
+        throw new Error("Invalid remote server URL.");
+      }
+      writePersistedDesktopConfig({ remoteServerUrl: value });
+      process.env.T3CODE_DESKTOP_SERVER_URL = value;
+    }
+
+    delete process.env.T3CODE_DESKTOP_WS_URL;
+    runtimeInjectedDesktopWsUrl = null;
+    app.relaunch();
+    app.exit(0);
+  });
+
   ipcMain.removeHandler(UPDATE_GET_STATE_CHANNEL);
   ipcMain.handle(UPDATE_GET_STATE_CHANNEL, async () => updateState);
 
@@ -1313,6 +1441,19 @@ configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
+  const remoteWsUrl = resolveConfiguredRemoteWsUrl();
+  if (remoteWsUrl) {
+    backendWsUrl = remoteWsUrl;
+    process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
+    runtimeInjectedDesktopWsUrl = backendWsUrl;
+    writeDesktopLogHeader(`bootstrap using remote websocket url=${backendWsUrl}`);
+    registerIpcHandlers();
+    writeDesktopLogHeader("bootstrap ipc handlers registered");
+    mainWindow = createWindow();
+    writeDesktopLogHeader("bootstrap main window created");
+    return;
+  }
+
   backendPort = await Effect.service(NetService).pipe(
     Effect.flatMap((net) => net.reserveLoopbackPort()),
     Effect.provide(NetService.layer),
@@ -1322,6 +1463,7 @@ async function bootstrap(): Promise<void> {
   backendAuthToken = Crypto.randomBytes(24).toString("hex");
   backendWsUrl = `ws://127.0.0.1:${backendPort}/?token=${encodeURIComponent(backendAuthToken)}`;
   process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
+  runtimeInjectedDesktopWsUrl = backendWsUrl;
   writeDesktopLogHeader(`bootstrap resolved websocket url=${backendWsUrl}`);
 
   registerIpcHandlers();

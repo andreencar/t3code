@@ -63,3 +63,20 @@ Open from any device in your tailnet:
 `http://<tailnet-ip>:3773`
 
 You can also bind `--host 0.0.0.0` and connect through the Tailnet IP, but binding directly to the Tailnet IP limits exposure.
+
+## 3) Desktop app -> remote server
+
+The desktop app can connect to an already running remote T3 server.
+
+- `T3CODE_DESKTOP_SERVER_URL`: accepts `http(s)://...` or `ws(s)://...` and auto-converts http->ws.
+- `T3CODE_DESKTOP_WS_URL`: explicit websocket URL (takes precedence).
+
+Example:
+
+```bash
+T3CODE_DESKTOP_SERVER_URL="http://100.80.180.96:3773" bun run start:desktop
+```
+
+If your server requires websocket token auth, include it in the websocket URL query string, for example:
+
+`wss://example.com:3773/?token=<token>`
