@@ -1,11 +1,16 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
+    "baseUrl": ".",
     "composite": true,
     "types": ["node", "bun"],
     "lib": ["ES2023", "esnext.disposable"],
     "noEmit": true,
     "allowImportingTsExtensions": true,
+    "paths": {
+      "effect": ["../node_modules/effect"],
+      "effect/*": ["../node_modules/effect/*"]
+    },
     "plugins": [
       {
         "name": "@effect/language-service"

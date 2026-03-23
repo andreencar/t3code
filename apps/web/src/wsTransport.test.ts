@@ -206,4 +206,21 @@ describe("WsTransport", () => {
     await expect(requestPromise).resolves.toEqual({ projects: [] });
     transport.dispose();
   });
+
+  it("publishes websocket state transitions to subscribers", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const listener = vi.fn();
+    const unsubscribe = transport.onStateChange(listener, { replayLatest: true });
+    const socket = getSocket();
+
+    socket.open();
+    socket.close();
+
+    expect(listener).toHaveBeenNthCalledWith(1, "connecting");
+    expect(listener).toHaveBeenNthCalledWith(2, "open");
+    expect(listener).toHaveBeenNthCalledWith(3, "closed");
+
+    unsubscribe();
+    transport.dispose();
+  });
 });

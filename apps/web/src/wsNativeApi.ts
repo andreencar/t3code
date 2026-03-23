@@ -10,11 +10,48 @@ import {
 } from "@t3tools/contracts";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
-import { WsTransport } from "./wsTransport";
+import { type TransportState, WsTransport } from "./wsTransport";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
+const wsConnectionListeners = new Set<() => void>();
+let lastWsConnectionSnapshot: {
+  state: TransportState;
+  url: string | null;
+} | null = null;
+
+function emitWsConnectionChange(): void {
+  for (const listener of wsConnectionListeners) {
+    listener();
+  }
+}
+
+function readWsConnectionSnapshot(): {
+  state: TransportState;
+  url: string | null;
+} {
+  const snapshot = instance
+    ? {
+        state: instance.transport.getState(),
+        url: instance.transport.getUrl(),
+      }
+    : {
+        state: "connecting" as const,
+        url: null,
+      };
+
+  if (
+    lastWsConnectionSnapshot &&
+    lastWsConnectionSnapshot.state === snapshot.state &&
+    lastWsConnectionSnapshot.url === snapshot.url
+  ) {
+    return lastWsConnectionSnapshot;
+  }
+
+  lastWsConnectionSnapshot = snapshot;
+  return snapshot;
+}
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -62,10 +99,28 @@ export function onServerConfigUpdated(
   };
 }
 
+export function getWsConnectionSnapshot() {
+  return readWsConnectionSnapshot();
+}
+
+export function onWsConnectionChange(listener: () => void): () => void {
+  wsConnectionListeners.add(listener);
+  return () => {
+    wsConnectionListeners.delete(listener);
+  };
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
   const transport = new WsTransport();
+
+  transport.onStateChange(
+    () => {
+      emitWsConnectionChange();
+    },
+    { replayLatest: true },
+  );
 
   transport.subscribe(WS_CHANNELS.serverWelcome, (message) => {
     const payload = message.data;
@@ -178,5 +233,6 @@ export function createWsNativeApi(): NativeApi {
   };
 
   instance = { api, transport };
+  emitWsConnectionChange();
   return api;
 }
