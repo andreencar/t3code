@@ -1,0 +1,18 @@
+[Unit]
+Description=T3 Code server (Contabo host-native)
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/t3code/current
+Environment=APP_ROOT=/opt/t3code
+EnvironmentFile=-/opt/t3code/shared/t3code.env
+ExecStart=/opt/t3code/current/deploy/contabo/start-t3.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
