@@ -39,7 +39,9 @@ if grep -q '^T3CODE_AUTH_TOKEN=replace-me$' "$ENV_PATH"; then
   exit 1
 fi
 
-bun install --frozen-lockfile
+# Skip workspace prepare hooks on the VPS. They patch editor tooling and have
+# already proven expensive enough to be OOM-killed on this host.
+bun install --frozen-lockfile --ignore-scripts
 bun run build
 
 ln -sfn "$RELEASE_DIR" "${APP_ROOT}/current"
