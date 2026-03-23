@@ -56,9 +56,9 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const REMOTE_GET_URL_CHANNEL = "desktop:remote-get-url";
+const REMOTE_GET_CONFIG_CHANNEL = "desktop:remote-get-config";
 const REMOTE_TEST_URL_CHANNEL = "desktop:remote-test-url";
-const REMOTE_SAVE_URL_CHANNEL = "desktop:remote-save-url";
+const REMOTE_SAVE_CONFIG_CHANNEL = "desktop:remote-save-config";
 const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_CONFIG_PATH = Path.join(STATE_DIR, "desktop-config.json");
@@ -108,6 +108,7 @@ const initialUpdateState = (): DesktopUpdateState =>
 
 interface DesktopPersistedConfig {
   remoteServerUrl?: string | null;
+  remoteServerToken?: string | null;
 }
 
 function readPersistedDesktopConfig(): DesktopPersistedConfig {
@@ -147,31 +148,69 @@ function normalizeRemoteWsUrl(rawUrl: string): string | null {
   }
 }
 
-function getConfiguredRemoteServerUrl(): string | null {
+function normalizeRemoteServerToken(rawToken: string | null | undefined): string | null {
+  const candidate = rawToken?.trim();
+  return candidate ? candidate : null;
+}
+
+function buildRemoteWsUrl(rawUrl: string, rawToken?: string | null): string | null {
+  const normalizedUrl = normalizeRemoteWsUrl(rawUrl);
+  if (!normalizedUrl) return null;
+
+  const url = new URL(normalizedUrl);
+  const token = normalizeRemoteServerToken(rawToken);
+  if (token) {
+    url.searchParams.set("token", token);
+  } else {
+    url.searchParams.delete("token");
+  }
+  return url.toString();
+}
+
+function getConfiguredRemoteServerConfig(): {
+  rawUrl: string | null;
+  token: string | null;
+} {
   const envServerUrl = process.env.T3CODE_DESKTOP_SERVER_URL?.trim();
-  if (envServerUrl) return envServerUrl;
+  const envToken = normalizeRemoteServerToken(process.env.T3CODE_DESKTOP_SERVER_TOKEN);
+  if (envServerUrl) {
+    return {
+      rawUrl: envServerUrl,
+      token: envToken,
+    };
+  }
 
   const envExplicitWsUrl = process.env.T3CODE_DESKTOP_WS_URL?.trim();
   if (envExplicitWsUrl && envExplicitWsUrl !== runtimeInjectedDesktopWsUrl) {
-    return envExplicitWsUrl;
+    const parsed = new URL(envExplicitWsUrl);
+    return {
+      rawUrl: envExplicitWsUrl,
+      token: normalizeRemoteServerToken(parsed.searchParams.get("token")),
+    };
   }
 
-  const persisted = readPersistedDesktopConfig().remoteServerUrl;
-  if (!persisted || !persisted.trim()) return null;
-  return persisted.trim();
+  const persisted = readPersistedDesktopConfig();
+  const rawUrl = persisted.remoteServerUrl?.trim() || null;
+  return {
+    rawUrl,
+    token: normalizeRemoteServerToken(persisted.remoteServerToken),
+  };
 }
 
 function resolveConfiguredRemoteWsUrl(): string | null {
-  const configured = getConfiguredRemoteServerUrl();
-  if (!configured) return null;
-  const normalized = normalizeRemoteWsUrl(configured);
+  const { rawUrl, token } = getConfiguredRemoteServerConfig();
+  if (!rawUrl) return null;
+  const normalized = buildRemoteWsUrl(rawUrl, token);
   if (normalized) return normalized;
-  console.warn(`[desktop] ignoring invalid remote server URL: ${configured}`);
+  console.warn(`[desktop] ignoring invalid remote server URL: ${rawUrl}`);
   return null;
 }
 
-async function testRemoteServerUrl(rawUrl: string): Promise<{ ok: boolean; message: string }> {
-  const normalizedWsUrl = normalizeRemoteWsUrl(rawUrl);
+async function testRemoteServerUrl(
+  rawUrl: string,
+  rawToken?: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  const normalizedWsUrl = buildRemoteWsUrl(rawUrl, rawToken);
   if (!normalizedWsUrl) {
     return { ok: false, message: "Enter a valid http(s) or ws(s) URL." };
   }
@@ -1275,33 +1314,59 @@ function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.removeHandler(REMOTE_GET_URL_CHANNEL);
-  ipcMain.handle(REMOTE_GET_URL_CHANNEL, async () => {
-    const configured = getConfiguredRemoteServerUrl();
-    return configured && configured.length > 0 ? configured : null;
+  ipcMain.removeHandler(REMOTE_GET_CONFIG_CHANNEL);
+  ipcMain.handle(REMOTE_GET_CONFIG_CHANNEL, async () => {
+    const { rawUrl, token } = getConfiguredRemoteServerConfig();
+    return {
+      url: rawUrl && rawUrl.length > 0 ? rawUrl : null,
+      token,
+    };
   });
 
   ipcMain.removeHandler(REMOTE_TEST_URL_CHANNEL);
-  ipcMain.handle(REMOTE_TEST_URL_CHANNEL, async (_event, rawUrl: unknown) => {
-    if (typeof rawUrl !== "string") {
-      return { ok: false, message: "Enter a valid URL." };
-    }
-    return testRemoteServerUrl(rawUrl);
-  });
+  ipcMain.handle(
+    REMOTE_TEST_URL_CHANNEL,
+    async (_event, input: unknown) => {
+      if (typeof input !== "object" || input === null) {
+        return { ok: false, message: "Enter a valid URL." };
+      }
+      const rawUrl = "url" in input ? input.url : undefined;
+      const rawToken = "token" in input ? input.token : undefined;
+      if (typeof rawUrl !== "string") {
+        return { ok: false, message: "Enter a valid URL." };
+      }
+      return testRemoteServerUrl(rawUrl, typeof rawToken === "string" ? rawToken : null);
+    },
+  );
 
-  ipcMain.removeHandler(REMOTE_SAVE_URL_CHANNEL);
-  ipcMain.handle(REMOTE_SAVE_URL_CHANNEL, async (_event, rawUrl: unknown) => {
+  ipcMain.removeHandler(REMOTE_SAVE_CONFIG_CHANNEL);
+  ipcMain.handle(REMOTE_SAVE_CONFIG_CHANNEL, async (_event, input: unknown) => {
+    if (typeof input !== "object" || input === null) {
+      throw new Error("Invalid remote server configuration.");
+    }
+    const rawUrl = "url" in input ? input.url : undefined;
+    const rawToken = "token" in input ? input.token : undefined;
     const value = typeof rawUrl === "string" ? rawUrl.trim() : "";
+    const token = typeof rawToken === "string" ? rawToken.trim() : "";
     if (value.length === 0) {
-      writePersistedDesktopConfig({ remoteServerUrl: null });
+      writePersistedDesktopConfig({ remoteServerUrl: null, remoteServerToken: null });
       delete process.env.T3CODE_DESKTOP_SERVER_URL;
+      delete process.env.T3CODE_DESKTOP_SERVER_TOKEN;
     } else {
-      const normalized = normalizeRemoteWsUrl(value);
+      const normalized = buildRemoteWsUrl(value, token);
       if (!normalized) {
         throw new Error("Invalid remote server URL.");
       }
-      writePersistedDesktopConfig({ remoteServerUrl: value });
+      writePersistedDesktopConfig({
+        remoteServerUrl: value,
+        remoteServerToken: token.length > 0 ? token : null,
+      });
       process.env.T3CODE_DESKTOP_SERVER_URL = value;
+      if (token.length > 0) {
+        process.env.T3CODE_DESKTOP_SERVER_TOKEN = token;
+      } else {
+        delete process.env.T3CODE_DESKTOP_SERVER_TOKEN;
+      }
     }
 
     delete process.env.T3CODE_DESKTOP_WS_URL;

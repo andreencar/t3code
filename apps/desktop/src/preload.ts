@@ -11,16 +11,18 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const REMOTE_GET_URL_CHANNEL = "desktop:remote-get-url";
+const REMOTE_GET_CONFIG_CHANNEL = "desktop:remote-get-config";
 const REMOTE_TEST_URL_CHANNEL = "desktop:remote-test-url";
-const REMOTE_SAVE_URL_CHANNEL = "desktop:remote-save-url";
+const REMOTE_SAVE_CONFIG_CHANNEL = "desktop:remote-save-config";
 const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
 contextBridge.exposeInMainWorld("desktopBridge", {
   getWsUrl: () => wsUrl,
-  getRemoteServerUrl: () => ipcRenderer.invoke(REMOTE_GET_URL_CHANNEL),
-  testRemoteServerUrl: (url: string) => ipcRenderer.invoke(REMOTE_TEST_URL_CHANNEL, url),
-  saveRemoteServerUrl: (url: string | null) => ipcRenderer.invoke(REMOTE_SAVE_URL_CHANNEL, url),
+  getRemoteServerConfig: () => ipcRenderer.invoke(REMOTE_GET_CONFIG_CHANNEL),
+  testRemoteServerConfig: (input: { url: string; token: string | null }) =>
+    ipcRenderer.invoke(REMOTE_TEST_URL_CHANNEL, input),
+  saveRemoteServerConfig: (input: { url: string | null; token: string | null }) =>
+    ipcRenderer.invoke(REMOTE_SAVE_CONFIG_CHANNEL, input),
   pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),

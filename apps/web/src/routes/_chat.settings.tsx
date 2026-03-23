@@ -70,6 +70,7 @@ function SettingsRouteView() {
     Partial<Record<ProviderKind, string | null>>
   >({});
   const [remoteServerUrl, setRemoteServerUrl] = useState("");
+  const [remoteServerToken, setRemoteServerToken] = useState("");
   const [isRemoteTesting, setIsRemoteTesting] = useState(false);
   const [isRemoteSaving, setIsRemoteSaving] = useState(false);
   const [remoteFeedback, setRemoteFeedback] = useState<{
@@ -95,9 +96,10 @@ function SettingsRouteView() {
 
   useEffect(() => {
     const bridge = window.desktopBridge;
-    if (!bridge?.getRemoteServerUrl) return;
-    void bridge.getRemoteServerUrl().then((url) => {
-      setRemoteServerUrl(url ?? "");
+    if (!bridge?.getRemoteServerConfig) return;
+    void bridge.getRemoteServerConfig().then((config) => {
+      setRemoteServerUrl(config.url ?? "");
+      setRemoteServerToken(config.token ?? "");
     });
   }, []);
 
@@ -190,11 +192,14 @@ function SettingsRouteView() {
 
   const testRemoteServer = useCallback(() => {
     const bridge = window.desktopBridge;
-    if (!bridge?.testRemoteServerUrl) return;
+    if (!bridge?.testRemoteServerConfig) return;
     setRemoteFeedback(null);
     setIsRemoteTesting(true);
     void bridge
-      .testRemoteServerUrl(remoteServerUrl)
+      .testRemoteServerConfig({
+        url: remoteServerUrl,
+        token: remoteServerToken.trim() || null,
+      })
       .then((result) => {
         setRemoteFeedback({
           kind: result.ok ? "success" : "error",
@@ -208,16 +213,20 @@ function SettingsRouteView() {
         });
       })
       .finally(() => setIsRemoteTesting(false));
-  }, [remoteServerUrl]);
+  }, [remoteServerToken, remoteServerUrl]);
 
   const saveRemoteServer = useCallback(() => {
     const bridge = window.desktopBridge;
-    if (!bridge?.saveRemoteServerUrl) return;
+    if (!bridge?.saveRemoteServerConfig) return;
     setRemoteFeedback(null);
     setIsRemoteSaving(true);
     const nextValue = remoteServerUrl.trim();
+    const nextToken = remoteServerToken.trim();
     void bridge
-      .saveRemoteServerUrl(nextValue.length > 0 ? nextValue : null)
+      .saveRemoteServerConfig({
+        url: nextValue.length > 0 ? nextValue : null,
+        token: nextToken.length > 0 ? nextToken : null,
+      })
       .catch((error) => {
         setRemoteFeedback({
           kind: "error",
@@ -225,7 +234,7 @@ function SettingsRouteView() {
         });
       })
       .finally(() => setIsRemoteSaving(false));
-  }, [remoteServerUrl]);
+  }, [remoteServerToken, remoteServerUrl]);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
@@ -248,14 +257,15 @@ function SettingsRouteView() {
             </header>
 
             {isElectron &&
-              window.desktopBridge?.getRemoteServerUrl &&
-              window.desktopBridge?.testRemoteServerUrl &&
-              window.desktopBridge?.saveRemoteServerUrl && (
+              window.desktopBridge?.getRemoteServerConfig &&
+              window.desktopBridge?.testRemoteServerConfig &&
+              window.desktopBridge?.saveRemoteServerConfig && (
                 <section className="rounded-2xl border border-border bg-card p-5">
                   <div className="mb-4">
                     <h2 className="text-sm font-medium text-foreground">Remote Server</h2>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Connect this desktop app to an existing T3 server URL.
+                      Connect this desktop app to an existing T3 server URL with an optional auth
+                      token.
                     </p>
                   </div>
                   <div className="space-y-3">
@@ -263,6 +273,12 @@ function SettingsRouteView() {
                       value={remoteServerUrl}
                       onChange={(event) => setRemoteServerUrl(event.target.value)}
                       placeholder="http://100.80.180.96:3773"
+                    />
+                    <Input
+                      value={remoteServerToken}
+                      onChange={(event) => setRemoteServerToken(event.target.value)}
+                      placeholder="Auth token"
+                      type="password"
                     />
                     <div className="flex flex-wrap items-center gap-2">
                       <Button

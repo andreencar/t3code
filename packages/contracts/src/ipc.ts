@@ -96,9 +96,15 @@ export interface DesktopUpdateActionResult {
 
 export interface DesktopBridge {
   getWsUrl: () => string | null;
-  getRemoteServerUrl?: () => Promise<string | null>;
-  testRemoteServerUrl?: (url: string) => Promise<{ ok: boolean; message: string }>;
-  saveRemoteServerUrl?: (url: string | null) => Promise<void>;
+  getRemoteServerConfig?: () => Promise<{ url: string | null; token: string | null }>;
+  testRemoteServerConfig?: (input: {
+    url: string;
+    token: string | null;
+  }) => Promise<{ ok: boolean; message: string }>;
+  saveRemoteServerConfig?: (input: {
+    url: string | null;
+    token: string | null;
+  }) => Promise<void>;
   pickFolder: () => Promise<string | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
