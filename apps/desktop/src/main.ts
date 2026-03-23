@@ -59,8 +59,8 @@ const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const REMOTE_GET_URL_CHANNEL = "desktop:remote-get-url";
 const REMOTE_TEST_URL_CHANNEL = "desktop:remote-test-url";
 const REMOTE_SAVE_URL_CHANNEL = "desktop:remote-save-url";
-const STATE_DIR =
-  process.env.T3CODE_STATE_DIR?.trim() || Path.join(OS.homedir(), ".t3", "userdata");
+const BASE_DIR = process.env.T3CODE_HOME?.trim() || Path.join(OS.homedir(), ".t3");
+const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_CONFIG_PATH = Path.join(STATE_DIR, "desktop-config.json");
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
@@ -1017,7 +1017,7 @@ function backendEnv(): NodeJS.ProcessEnv {
     T3CODE_MODE: "desktop",
     T3CODE_NO_BROWSER: "1",
     T3CODE_PORT: String(backendPort),
-    T3CODE_STATE_DIR: STATE_DIR,
+    T3CODE_HOME: BASE_DIR,
     T3CODE_AUTH_TOKEN: backendAuthToken,
   };
 }
