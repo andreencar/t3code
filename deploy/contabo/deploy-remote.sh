@@ -42,6 +42,11 @@ fi
 # Skip workspace prepare hooks on the VPS. They patch editor tooling and have
 # already proven expensive enough to be OOM-killed on this host.
 bun install --frozen-lockfile --ignore-scripts
+
+# Restore the one native dependency the server needs at runtime.
+NODE_PTY_DIR="$(node -p "require('path').dirname(require.resolve('node-pty/package.json'))")"
+(cd "$NODE_PTY_DIR" && npm run install)
+
 bun run build
 
 ln -sfn "$RELEASE_DIR" "${APP_ROOT}/current"
