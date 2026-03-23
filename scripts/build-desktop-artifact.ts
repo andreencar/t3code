@@ -38,6 +38,11 @@ const ProductionWindowsIconSource = Effect.zipWith(
   Effect.service(Path.Path),
   (repoRoot, path) => path.join(repoRoot, BRAND_ASSET_PATHS.productionWindowsIconIco),
 );
+const BundledDesktopMacIconSource = Effect.zipWith(
+  RepoRoot,
+  Effect.service(Path.Path),
+  (repoRoot, path) => path.join(repoRoot, "apps/desktop/resources/icon.icns"),
+);
 const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
 
 interface PlatformConfig {
@@ -269,42 +274,6 @@ const runCommand = Effect.fn("runCommand")(function* (command: ChildProcess.Comm
   }
 });
 
-function generateMacIconSet(
-  sourcePng: string,
-  targetIcns: string,
-  tmpRoot: string,
-  path: Path.Path,
-  verbose: boolean,
-) {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const iconsetDir = path.join(tmpRoot, "icon.iconset");
-    yield* fs.makeDirectory(iconsetDir, { recursive: true });
-
-    const iconSizes = [16, 32, 128, 256, 512] as const;
-    for (const size of iconSizes) {
-      yield* runCommand(
-        ChildProcess.make({
-          ...commandOutputOptions(verbose),
-        })`sips -z ${size} ${size} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}.png`)}`,
-      );
-
-      const retinaSize = size * 2;
-      yield* runCommand(
-        ChildProcess.make({
-          ...commandOutputOptions(verbose),
-        })`sips -z ${retinaSize} ${retinaSize} ${sourcePng} --out ${path.join(iconsetDir, `icon_${size}x${size}@2x.png`)}`,
-      );
-    }
-
-    yield* runCommand(
-      ChildProcess.make({
-        ...commandOutputOptions(verbose),
-      })`iconutil -c icns ${iconsetDir} -o ${targetIcns}`,
-    );
-  });
-}
-
 function stageMacIcons(stageResourcesDir: string, verbose: boolean) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -316,12 +285,14 @@ function stageMacIcons(stageResourcesDir: string, verbose: boolean) {
       });
     }
 
-    const tmpRoot = yield* fs.makeTempDirectoryScoped({
-      prefix: "t3code-icon-build-",
-    });
-
     const iconPngPath = path.join(stageResourcesDir, "icon.png");
     const iconIcnsPath = path.join(stageResourcesDir, "icon.icns");
+    const fallbackIcnsSource = yield* BundledDesktopMacIconSource;
+    if (!(yield* fs.exists(fallbackIcnsSource))) {
+      return yield* new BuildScriptError({
+        message: `Bundled macOS icon is missing at ${fallbackIcnsSource}`,
+      });
+    }
 
     yield* runCommand(
       ChildProcess.make({
@@ -329,7 +300,7 @@ function stageMacIcons(stageResourcesDir: string, verbose: boolean) {
       })`sips -z 512 512 ${iconSource} --out ${iconPngPath}`,
     );
 
-    yield* generateMacIconSet(iconSource, iconIcnsPath, tmpRoot, path, verbose);
+    yield* fs.copyFile(fallbackIcnsSource, iconIcnsPath);
   });
 }
 
