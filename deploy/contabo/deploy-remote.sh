@@ -44,7 +44,7 @@ fi
 bun install --frozen-lockfile --ignore-scripts
 
 # Restore the one native dependency the server needs at runtime.
-NODE_PTY_DIR="$(node -p "require('path').dirname(require.resolve('node-pty/package.json'))")"
+NODE_PTY_DIR="$(node -p "require('path').dirname(require.resolve('node-pty/package.json', { paths: [require('path').resolve('apps/server')] }))")"
 (cd "$NODE_PTY_DIR" && npm run install)
 
 bun run build
