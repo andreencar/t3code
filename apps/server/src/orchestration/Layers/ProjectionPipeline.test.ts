@@ -1770,6 +1770,15 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
       `;
       assert.deepEqual(pendingRows, []);
 
+      const sessionRows = yield* sql<{
+        readonly providerThreadId: string | null;
+      }>`
+        SELECT provider_thread_id AS "providerThreadId"
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(sessionRows, [{ providerThreadId: null }]);
+
       return yield* sql<{
         readonly turnId: string;
         readonly userMessageId: string | null;

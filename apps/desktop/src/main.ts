@@ -1324,20 +1324,17 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(REMOTE_TEST_URL_CHANNEL);
-  ipcMain.handle(
-    REMOTE_TEST_URL_CHANNEL,
-    async (_event, input: unknown) => {
-      if (typeof input !== "object" || input === null) {
-        return { ok: false, message: "Enter a valid URL." };
-      }
-      const rawUrl = "url" in input ? input.url : undefined;
-      const rawToken = "token" in input ? input.token : undefined;
-      if (typeof rawUrl !== "string") {
-        return { ok: false, message: "Enter a valid URL." };
-      }
-      return testRemoteServerUrl(rawUrl, typeof rawToken === "string" ? rawToken : null);
-    },
-  );
+  ipcMain.handle(REMOTE_TEST_URL_CHANNEL, async (_event, input: unknown) => {
+    if (typeof input !== "object" || input === null) {
+      return { ok: false, message: "Enter a valid URL." };
+    }
+    const rawUrl = "url" in input ? input.url : undefined;
+    const rawToken = "token" in input ? input.token : undefined;
+    if (typeof rawUrl !== "string") {
+      return { ok: false, message: "Enter a valid URL." };
+    }
+    return testRemoteServerUrl(rawUrl, typeof rawToken === "string" ? rawToken : null);
+  });
 
   ipcMain.removeHandler(REMOTE_SAVE_CONFIG_CHANNEL);
   ipcMain.handle(REMOTE_SAVE_CONFIG_CHANNEL, async (_event, input: unknown) => {

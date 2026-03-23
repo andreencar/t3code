@@ -833,7 +833,7 @@ describe("collab child conversation routing", () => {
     );
   });
 
-  it("suppresses child lifecycle notifications so they cannot replace the parent turn", () => {
+  it("emits child lifecycle notifications without updating the parent session state", () => {
     const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
 
     (
@@ -879,7 +879,20 @@ describe("collab child conversation routing", () => {
       },
     });
 
-    expect(emitEvent).not.toHaveBeenCalled();
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: "turn/started",
+        turnId: "turn_parent",
+      }),
+    );
+    expect(emitEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: "turn/completed",
+        turnId: "turn_parent",
+      }),
+    );
     expect(updateSession).not.toHaveBeenCalled();
   });
 

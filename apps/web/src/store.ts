@@ -250,7 +250,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
       const existing = existingThreadById.get(thread.id);
       return {
         id: thread.id,
-        codexThreadId: null,
+        codexThreadId: thread.session?.providerThreadId ?? null,
         projectId: thread.projectId,
         title: thread.title,
         model: resolveModelSlugForProvider(

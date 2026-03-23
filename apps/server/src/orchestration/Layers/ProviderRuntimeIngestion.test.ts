@@ -215,6 +215,7 @@ describe("ProviderRuntimeIngestion", () => {
           threadId: ThreadId.makeUnsafe("thread-1"),
           status: "ready",
           providerName: "codex",
+          providerThreadId: "provider-parent",
           runtimeMode: "approval-required",
           activeTurnId: null,
           updatedAt: createdAt,
@@ -280,6 +281,61 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("creates a visible child thread for collab worker lifecycle events", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const childThreadId = asThreadId("collab:thread-1:provider-child-1");
+
+    harness.emit({
+      type: "thread.started",
+      eventId: asEventId("evt-child-thread-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        providerThreadId: "provider-child-1",
+      },
+      raw: {
+        source: "codex.app-server.notification",
+        method: "thread/started",
+        payload: {
+          threadId: "provider-child-1",
+        },
+      },
+    } as ProviderRuntimeEvent);
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-child-thread-named"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      payload: {
+        name: "api-service",
+      },
+      raw: {
+        source: "codex.app-server.notification",
+        method: "thread/name/updated",
+        payload: {
+          threadId: "provider-child-1",
+          threadName: "api-service",
+        },
+      },
+    } as ProviderRuntimeEvent);
+
+    const childThread = await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.title === "api-service" &&
+        thread.session?.providerThreadId === "provider-child-1" &&
+        thread.session?.status === "ready",
+      2000,
+      childThreadId,
+    );
+
+    expect(childThread.projectId).toBe("project-1");
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

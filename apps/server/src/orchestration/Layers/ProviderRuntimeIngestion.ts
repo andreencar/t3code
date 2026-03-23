@@ -101,12 +101,41 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
 function runtimePayloadRecord(event: ProviderRuntimeEvent): Record<string, unknown> | undefined {
   const payload = (event as { payload?: unknown }).payload;
-  if (!payload || typeof payload !== "object") {
-    return undefined;
+  return asRecord(payload);
+}
+
+function rawPayloadRecord(event: ProviderRuntimeEvent): Record<string, unknown> | undefined {
+  return asRecord(event.raw?.payload);
+}
+
+function providerThreadIdFromEvent(event: ProviderRuntimeEvent): string | undefined {
+  if (event.type === "thread.started") {
+    const payloadProviderThreadId = asString(runtimePayloadRecord(event)?.providerThreadId);
+    if (payloadProviderThreadId) {
+      return payloadProviderThreadId;
+    }
   }
-  return payload as Record<string, unknown>;
+
+  const rawPayload = rawPayloadRecord(event);
+  const rawThread = asRecord(rawPayload?.thread);
+  return asString(rawThread?.id) ?? asString(rawPayload?.threadId);
+}
+
+function providerTurnIdFromEvent(event: ProviderRuntimeEvent): TurnId | undefined {
+  const rawPayload = rawPayloadRecord(event);
+  const rawTurn = asRecord(rawPayload?.turn);
+  const rawTurnId = asString(rawTurn?.id) ?? asString(rawPayload?.turnId);
+  return rawTurnId === undefined ? toTurnId(event.turnId) : TurnId.makeUnsafe(rawTurnId);
+}
+
+function syntheticChildThreadId(parentThreadId: ThreadId, providerThreadId: string): ThreadId {
+  return ThreadId.makeUnsafe(`collab:${parentThreadId}:${providerThreadId}`);
 }
 
 function normalizeRuntimeTurnState(
@@ -856,14 +885,78 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const resolveRuntimeTargetThread = Effect.fnUntraced(function* (event: ProviderRuntimeEvent) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const rootThread = readModel.threads.find((entry) => entry.id === event.threadId);
+    if (!rootThread) {
+      return null;
+    }
+
+    const providerThreadId = providerThreadIdFromEvent(event);
+    const rootProviderThreadId = rootThread.session?.providerThreadId ?? null;
+    if (
+      !providerThreadId ||
+      rootProviderThreadId === null ||
+      providerThreadId === rootProviderThreadId
+    ) {
+      return {
+        thread: rootThread,
+        providerThreadId: rootProviderThreadId ?? providerThreadId ?? null,
+        isChildThread: false,
+      } as const;
+    }
+
+    const existingChildThread = readModel.threads.find(
+      (entry) => entry.session?.providerThreadId === providerThreadId,
+    );
+    if (existingChildThread) {
+      return {
+        thread: existingChildThread,
+        providerThreadId,
+        isChildThread: true,
+      } as const;
+    }
+
+    const createdAt = event.createdAt;
+    const childThreadId = syntheticChildThreadId(rootThread.id, providerThreadId);
+    yield* orchestrationEngine.dispatch({
+      type: "thread.create",
+      commandId: providerCommandId(event, "collab-child-thread-create"),
+      threadId: childThreadId,
+      projectId: rootThread.projectId,
+      title: `Worker ${providerThreadId.slice(0, 8)}`,
+      model: rootThread.model,
+      runtimeMode: rootThread.runtimeMode,
+      interactionMode: rootThread.interactionMode,
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+
+    const nextReadModel = yield* orchestrationEngine.getReadModel();
+    const childThread = nextReadModel.threads.find((entry) => entry.id === childThreadId);
+    if (!childThread) {
+      return null;
+    }
+
+    return {
+      thread: childThread,
+      providerThreadId,
+      isChildThread: true,
+    } as const;
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
-      const thread = readModel.threads.find((entry) => entry.id === event.threadId);
-      if (!thread) return;
+      const resolvedTarget = yield* resolveRuntimeTargetThread(event);
+      if (resolvedTarget === null) return;
+
+      const thread = resolvedTarget.thread;
 
       const now = event.createdAt;
-      const eventTurnId = toTurnId(event.turnId);
+      const eventTurnId = resolvedTarget.isChildThread
+        ? providerTurnIdFromEvent(event)
+        : toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
 
       const conflictsWithActiveTurn =
@@ -970,6 +1063,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status,
               providerName: event.provider,
+              providerThreadId:
+                resolvedTarget.providerThreadId ?? thread.session?.providerThreadId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -1139,6 +1234,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerThreadId:
+                resolvedTarget.providerThreadId ?? thread.session?.providerThreadId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
